@@ -81,13 +81,67 @@ enum AdServer {
     }
 
     /// 카카오톡과 같은 경로로 광고를 요청해 본다. hosts·인증서 신뢰·서버가 모두 맞아야 KleanTalk의 빈 광고가 돌아온다.
-    static func isWorking() async -> Bool {
-        guard let url = URL(string: "https://\(host)/sdk/banner?kleantalk=check") else { return false }
+    static func isWorking() async -> Bool { await probe().ok }
+
+    /// isWorking과 같은 확인. 실패하면 어디서 막혔는지(오류 코드 등)도 돌려준다.
+    static func probe() async -> (ok: Bool, detail: String) {
+        guard let url = URL(string: "https://\(host)/sdk/banner?kleantalk=check") else { return (false, "bad url") }
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 3
-        guard let (_, response) = try? await URLSession(configuration: config).data(from: url),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return false }
-        return http.value(forHTTPHeaderField: "X-KleanTalk") == "1"   // 빈 광고 서버가 붙이는 표시
+        do {
+            let (_, response) = try await URLSession(configuration: config).data(from: url)
+            guard let http = response as? HTTPURLResponse else { return (false, "no http response") }
+            let marked = http.value(forHTTPHeaderField: "X-KleanTalk") == "1"   // 빈 광고 서버가 붙이는 표시
+            return (http.statusCode == 200 && marked, "HTTP \(http.statusCode)\(marked ? "" : ", not KleanTalk server")")
+        } catch let error as NSError {
+            let underlying = (error.userInfo[NSUnderlyingErrorKey] as? NSError).map { " / \($0.domain) \($0.code)" } ?? ""
+            return (false, "\(error.domain) \(error.code)\(underlying): \(error.localizedDescription)")
+        }
+    }
+
+    /// 작동하지 않을 때 어느 단계에서 막혔는지 모은다 (버그 신고 본문에 넣는다).
+    /// hosts → 서버 실행 → 인증서 신뢰 → 실제 요청 순서로 보면 원인을 좁힐 수 있다.
+    static func diagnose() async -> [String] {
+        var addresses: [String] = []
+        var info: UnsafeMutablePointer<addrinfo>?
+        if getaddrinfo(host, "443", nil, &info) == 0 {
+            var p = info
+            while let ai = p {
+                var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(ai.pointee.ai_addr, ai.pointee.ai_addrlen, &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 {
+                    let a = String(cString: buf)
+                    if !addresses.contains(a) { addresses.append(a) }
+                }
+                p = ai.pointee.ai_next
+            }
+            freeaddrinfo(info)
+        }
+        let probe = await probe()
+        return [
+            "hosts: \(addresses.isEmpty ? "unresolved" : addresses.joined(separator: ", "))",
+            "server: \(FileManager.default.fileExists(atPath: installedBinaryPath) ? "installed" : "missing"), \(run("/usr/bin/pgrep", "-f", installedBinaryPath).isEmpty ? "not running" : "running")",
+            "trust: \(isTrusted() ? "yes" : "no")",
+            "check: \(probe.detail)",
+        ] + serverLog().map { "log: \($0)" }
+    }
+
+    /// 빈 광고 서버의 최근 기록 몇 줄 (시작 실패·인증서 오류가 여기 남는다)
+    private static func serverLog() -> [String] {
+        let out = run("/usr/bin/log", "show", "--last", "30m", "--style", "compact",
+                      "--predicate", "subsystem == \"com.myungchul.kleantalk.adserver\"")
+        return out.split(separator: "\n").map(String.init).filter { !$0.hasPrefix("Timestamp") }.suffix(8)
+    }
+
+    private static func run(_ path: String, _ args: String...) -> String {
+        let p = Process(), pipe = Pipe()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return "" }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static let certPath = "/Library/Application Support/KleanTalk/AdServer/cert.der"
@@ -278,7 +332,15 @@ final class AppModel: ObservableObject {
     }
 
     /// GitHub에 새 이슈 쓰기 화면을 연다. 버전·macOS·칩·카카오톡 버전·상태를 본문에 미리 채운다.
+    /// 설치했는데 작동하지 않으면 어느 단계에서 막혔는지도 넣는다.
     func reportBug() {
+        Task {
+            let checks = AdServer.installed && state != .working ? await AdServer.diagnose() : []
+            openBugReport(checks: checks)
+        }
+    }
+
+    private func openBugReport(checks: [String]) {
         let info = Bundle.main.infoDictionary ?? [:]
         let version = "\(info["CFBundleShortVersionString"] ?? "?") (\(info["CFBundleVersion"] ?? "?"))"
         let kakao = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.kakao.KakaoTalkMac")
@@ -289,12 +351,12 @@ final class AppModel: ObservableObject {
         let chip = "Intel"
         #endif
         let state = switch self.state { case .working: "working"; case .notWorking: "not working"; case .checking: "checking" }
-        let env = [
+        let env = ([
             "- KleanTalk: \(version)",
             "- macOS: \(ProcessInfo.processInfo.operatingSystemVersionString) · \(chip)",
             "- KakaoTalk: \(kakao)",
             "- 상태 / State: \(state)\(serverOutdated ? ", server outdated" : "")\(error.map { " · \($0)" } ?? "")",
-        ].joined(separator: "\n")
+        ] + checks.map { "  - \($0)" }).joined(separator: "\n")
         var c = URLComponents(string: "https://github.com/showmeyourway-sketch/KleanTalk/issues/new")!
         c.queryItems = [.init(name: "labels", value: "bug"), .init(name: "title", value: t.bugTitle), .init(name: "body", value: t.bugBody + env)]
         if let url = c.url { NSWorkspace.shared.open(url) }
@@ -550,6 +612,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     private static let showWindowNotification = Notification.Name(bundleID + ".showWindow")
 
     static func main() {
+        // 지원용: 터미널에서 KleanTalk.app/Contents/MacOS/KleanTalk --diagnose 로 단계별 확인 결과를 출력한다
+        if CommandLine.arguments.contains("--diagnose") {
+            Task {
+                for line in await AdServer.diagnose() { print(line) }
+                exit(0)
+            }
+            dispatchMain()
+        }
         let app = NSApplication.shared
         let pid = ProcessInfo.processInfo.processIdentifier
         // 이미 실행 중이면 그쪽에 창을 띄우라고 알리고 끝낸다 (로그인 때 뜬 백그라운드 실행과 겹치지 않게)
