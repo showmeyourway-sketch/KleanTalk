@@ -25,7 +25,12 @@ if [[ ! -d $SPARKLE/Sparkle.framework ]]; then
   mkdir -p "$SPARKLE" && tar -xJf "$SPARKLE.tar.xz" -C "$SPARKLE"
 fi
 RES="$APP/Contents/Resources"
-rm -rf build
+# 빌드 결과는 동기화되지 않는 캐시 폴더에 두고 build/로 연결한다. 이 폴더가 iCloud(파일 제공자)로 동기화되면
+# 앱 폴더에 Finder 정보가 다시 붙어 서명이 거부되고, 그대로 DMG·zip에 담기면 받은 사람 쪽 서명 확인도 깨진다.
+OUT="$HOME/Library/Caches/KleanTalk/build"
+rm -rf build "$OUT"
+mkdir -p "$OUT"
+ln -s "$OUT" build
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$RES"
 cp Info.plist "$APP/Contents/Info.plist"
 # 개발용: 업데이트를 시험할 때만 빌드 번호를 바꾼다 (KLEANTALK_BUILD_NUMBER)
