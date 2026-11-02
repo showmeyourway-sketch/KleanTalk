@@ -1,5 +1,4 @@
 import AppKit
-import CryptoKit
 import Sparkle
 import SwiftUI
 
@@ -22,7 +21,7 @@ struct Strings {
     let language: String, uninstallButton: String, uninstallTitle: String, uninstallBody: String, uninstall: String
     let adminPrompt: String, missingFiles: String, trustCanceled: String, trustFailed: String
     let checkUpdates: String, serverOutdated: String, version: String, upToDate: String, updateTo: String
-    let reportBug: String, bugTitle: String, bugBody: String
+    let reportBug: String, bugTitle: String, bugBody: String, copyInfo: String, copiedInfo: String, infoTitle: String
     let quit: String, edit: String, cut: String, copy: String, paste: String, selectAll: String, window: String, close: String
 
     static let ko = Strings(
@@ -43,6 +42,7 @@ struct Strings {
         version: "버전", upToDate: "최신 버전", updateTo: "%@로 업데이트",
         reportBug: "버그 신고", bugTitle: "[버그] ",
         bugBody: "### 무슨 일이 있었나요?\n\n\n### 어떻게 하면 다시 생기나요?\n1. \n\n### 환경 (자동으로 채움)\n",
+        copyInfo: "정보 복사", copiedInfo: "복사했습니다", infoTitle: "KleanTalk 진단 정보",
         quit: "KleanTalk 종료", edit: "편집", cut: "잘라내기", copy: "복사", paste: "붙여넣기", selectAll: "모두 선택",
         window: "윈도우", close: "닫기")
 
@@ -65,6 +65,7 @@ struct Strings {
         version: "Version", upToDate: "Up to date", updateTo: "Update to %@",
         reportBug: "Report a Bug", bugTitle: "[Bug] ",
         bugBody: "### What happened?\n\n\n### How can we reproduce it?\n1. \n\n### Environment (filled in automatically)\n",
+        copyInfo: "Copy Info", copiedInfo: "Copied", infoTitle: "KleanTalk diagnostic info",
         quit: "Quit KleanTalk", edit: "Edit", cut: "Cut", copy: "Copy", paste: "Paste", selectAll: "Select All",
         window: "Window", close: "Close")
 }
@@ -147,13 +148,16 @@ enum AdServer {
     static let certPath = "/Library/Application Support/KleanTalk/AdServer/cert.der"
     static let installedBinaryPath = "/Library/Application Support/KleanTalk/AdServer/kleantalk-adserver"
 
-    /// 앱이 업데이트되면서 앱 안의 서버가 설치된 서버와 달라졌는지. (설치된 서버는 관리자 폴더에 있어 '다시 설치'로 바꾼다)
+    /// 앱이 업데이트되면서 앱 안의 서버가 설치된 서버보다 새 버전이 됐는지. (설치된 서버는 관리자 폴더에 있어 '다시 설치'로 바꾼다)
+    /// 실행 파일을 그대로 비교하지 않고 서버가 알려 주는 버전 번호를 비교한다. 같은 코드도 Xcode가 바뀌면 다르게 빌드되기 때문이다.
     static var serverOutdated: Bool {
-        guard installed,
-              let bundled = Bundle.main.path(forResource: "kleantalk-adserver", ofType: nil).flatMap(FileManager.default.contents(atPath:)),
-              let current = FileManager.default.contents(atPath: installedBinaryPath) else { return false }
-        return SHA256.hash(data: bundled) != SHA256.hash(data: current)
+        guard installed, FileManager.default.fileExists(atPath: installedBinaryPath),
+              let bundled = Bundle.main.path(forResource: "kleantalk-adserver", ofType: nil) else { return false }
+        return serverVersion(at: installedBinaryPath) < serverVersion(at: bundled)
     }
+
+    /// --version을 모르는 예전 서버(1.10까지)는 1
+    private static func serverVersion(at path: String) -> Int { Int(run(path, "--version")) ?? 1 }
 
     static func certificateData() -> Data? { FileManager.default.contents(atPath: certPath) }
 
@@ -258,6 +262,8 @@ final class AppModel: ObservableObject {
     @Published var error: String?
     @Published var restartedKakao = false
     @Published var serverOutdated = false
+    /// '정보 복사'를 누른 직후 잠깐 '복사했습니다'로 보여 준다
+    @Published var copiedInfo = false
     /// Sparkle로 확인한 새 버전. 확인 전이거나 확인하지 못하면 unknown.
     enum Update: Equatable { case unknown, upToDate, available(String) }
     @Published var update = Update.unknown
@@ -282,21 +288,24 @@ final class AppModel: ObservableObject {
         case "uninstall": screen = .uninstallConfirm
         default: break
         }
-        // 개발용: 상태 화면의 업데이트 줄과 다시 설치 줄 (KLEANTALK_PREVIEW_UPDATE=1.7|latest, KLEANTALK_PREVIEW_OUTDATED=1)
+        // 개발용: 상태 화면의 업데이트 줄과 다시 설치 줄 (KLEANTALK_PREVIEW_UPDATE=1.7|latest, KLEANTALK_PREVIEW_OUTDATED=1,
+        // 작동하지 않음 화면은 KLEANTALK_PREVIEW_BROKEN=1)
         switch env["KLEANTALK_PREVIEW_UPDATE"] {
         case nil: break
         case "latest": update = .upToDate
         case let v?: update = .available(v)
         }
         previewOutdated = env["KLEANTALK_PREVIEW_OUTDATED"] != nil
+        previewBroken = env["KLEANTALK_PREVIEW_BROKEN"] != nil
     }
 
     /// 개발용 미리 보기 중에는 실제 상태를 확인하지 않고 '작동 중'으로 보여 준다
     private var preview = false
     private var previewOutdated = false
+    private var previewBroken = false
 
     func check() async {
-        if preview { state = .working; serverOutdated = previewOutdated; return }
+        if preview { state = previewBroken ? .notWorking : .working; serverOutdated = previewOutdated; return }
         guard AdServer.installed else { state = .notWorking; return }
         serverOutdated = AdServer.serverOutdated
         if state != .working { state = .checking }
@@ -336,11 +345,28 @@ final class AppModel: ObservableObject {
     func reportBug() {
         Task {
             let checks = AdServer.installed && state != .working ? await AdServer.diagnose() : []
-            openBugReport(checks: checks)
+            var c = URLComponents(string: "https://github.com/showmeyourway-sketch/KleanTalk/issues/new")!
+            let body = t.bugBody + environment(checks: checks).joined(separator: "\n")
+            c.queryItems = [.init(name: "labels", value: "bug"), .init(name: "title", value: t.bugTitle), .init(name: "body", value: body)]
+            if let url = c.url { NSWorkspace.shared.open(url) }
         }
     }
 
-    private func openBugReport(checks: [String]) {
+    /// 버그 신고와 같은 내용(환경 + 단계별 확인 결과)을 클립보드에 복사한다.
+    /// GitHub이나 터미널을 몰라도 카페 댓글·카카오톡·이메일에 붙여 넣어 보낼 수 있게.
+    func copyInfo() {
+        Task {
+            let checks = AdServer.installed ? await AdServer.diagnose() : []
+            let text = ([t.infoTitle] + environment(checks: checks)).joined(separator: "\n")
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            copiedInfo = true
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            copiedInfo = false
+        }
+    }
+
+    private func environment(checks: [String]) -> [String] {
         let info = Bundle.main.infoDictionary ?? [:]
         let version = "\(info["CFBundleShortVersionString"] ?? "?") (\(info["CFBundleVersion"] ?? "?"))"
         let kakao = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.kakao.KakaoTalkMac")
@@ -351,15 +377,12 @@ final class AppModel: ObservableObject {
         let chip = "Intel"
         #endif
         let state = switch self.state { case .working: "working"; case .notWorking: "not working"; case .checking: "checking" }
-        let env = ([
+        return [
             "- KleanTalk: \(version)",
             "- macOS: \(ProcessInfo.processInfo.operatingSystemVersionString) · \(chip)",
             "- KakaoTalk: \(kakao)",
             "- 상태 / State: \(state)\(serverOutdated ? ", server outdated" : "")\(error.map { " · \($0)" } ?? "")",
-        ] + checks.map { "  - \($0)" }).joined(separator: "\n")
-        var c = URLComponents(string: "https://github.com/showmeyourway-sketch/KleanTalk/issues/new")!
-        c.queryItems = [.init(name: "labels", value: "bug"), .init(name: "title", value: t.bugTitle), .init(name: "body", value: t.bugBody + env)]
-        if let url = c.url { NSWorkspace.shared.open(url) }
+        ] + checks.map { "  - \($0)" }
     }
 
     func uninstall() {
@@ -505,6 +528,10 @@ struct StatusView: View {
                             .foregroundStyle(note.isError ? Color.red : Color.secondary)
                             .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 12)
+                        // 문제가 있을 때만: 진단 정보를 복사해 어디든 붙여 넣어 보낼 수 있게
+                        if model.state == .notWorking || model.error != nil {
+                            Button(model.copiedInfo ? t.copiedInfo : t.copyInfo) { model.copyInfo() }
+                        }
                         if needsReinstall { Button(t.reinstall) { model.install() } }
                     }
                     Divider()

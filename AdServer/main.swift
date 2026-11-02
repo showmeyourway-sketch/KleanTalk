@@ -181,7 +181,11 @@ func loadIdentity(certPath: String, keyPath: String) -> SecIdentity? {
 
 // MARK: - 시작
 
+/// 서버 동작이 바뀔 때만 올린다. 앱은 설치된 서버와 앱 안의 서버의 이 번호를 비교해 '다시 설치'를 안내한다.
+/// (실행 파일을 그대로 비교하면 Xcode만 바뀌어도 다시 설치하라고 나온다)
+let serverVersion = 1
 let args = CommandLine.arguments
+if args.count == 2 && args[1] == "--version" { print(serverVersion); exit(0) }
 guard args.count == 3, let identity = loadIdentity(certPath: args[1], keyPath: args[2]),
       let secIdentity = sec_identity_create(identity) else {
     FileHandle.standardError.write(Data("usage: kleantalk-adserver <cert.der> <key.der> (인증서·키를 읽지 못함)\n".utf8))
