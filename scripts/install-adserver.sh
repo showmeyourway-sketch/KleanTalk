@@ -35,6 +35,12 @@ fi
 mkdir -p "$DIR"
 chown root:wheel "$DIR"; chmod 755 "$DIR"
 install -o root -g wheel -m 755 "$SRC" "$DIR/kleantalk-adserver"
+# 검역 표시 제거: 브라우저로 받은 DMG에는 검역 표시가 붙고, install(1)은 이를 그대로 옮긴다.
+# 검역된 ad-hoc 바이너리는 Gatekeeper가 실행을 거부해 데몬이 뜨지 않는다.
+# 앱 폴더와 설치된 파일 모두에서 지운다 (DMG 안이면 읽기 전용이라 실패할 수 있어 무시).
+APP_DIR=${SRC%/Contents/Resources/kleantalk-adserver}
+xattr -cr "$APP_DIR" 2>/dev/null || true
+xattr -c "$DIR/kleantalk-adserver" 2>/dev/null || true
 TMP=$(mktemp -d)
 trap 'rm -rf "${TMP:?}"' EXIT
 if [[ $REUSE == false ]]; then
