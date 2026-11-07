@@ -3,7 +3,7 @@
 # 실행: KleanTalk 앱의 '빈 광고 서버 설치' 버튼, 또는 ./build.sh 로 빌드한 뒤  sudo ./scripts/install-adserver.sh [서버 실행 파일]
 #
 # 하는 일
-#  1. serv.ds.kakao.com 한 이름에만 쓰는 인증서와 키를 만든다. (인증 기관이 아닌 일반 인증서, 825일)
+#  1. serv.ds.kakao.com 한 이름에만 쓰는 인증서와 키를 만든다. (인증 기관이 아닌 일반 인증서, 365일)
 #     키는 root만 읽을 수 있는 폴더에 둔다.
 #  2. (인증서 신뢰 등록은 이 스크립트가 아니라 KleanTalk 앱이 사용자 권한으로 한다. 아래 참고)
 #  3. 빈 광고 서버를 LaunchDaemon으로 등록한다. (전용 주소 127.84.11.1:443 / 포트를 연 뒤 nobody 권한으로 동작)
@@ -35,6 +35,12 @@ fi
 mkdir -p "$DIR"
 chown root:wheel "$DIR"; chmod 755 "$DIR"
 install -o root -g wheel -m 755 "$SRC" "$DIR/kleantalk-adserver"
+# 검역 표시 제거: 브라우저로 받은 DMG에는 검역 표시가 붙고, install(1)은 이를 그대로 옮긴다.
+# 검역된 ad-hoc 바이너리는 Gatekeeper가 실행을 거부해 데몬이 뜨지 않는다.
+# 앱 폴더와 설치된 파일 모두에서 지운다 (DMG 안이면 읽기 전용이라 실패할 수 있어 무시).
+APP_DIR=${SRC%/Contents/Resources/kleantalk-adserver}
+xattr -cr "$APP_DIR" 2>/dev/null || true
+xattr -c "$DIR/kleantalk-adserver" 2>/dev/null || true
 TMP=$(mktemp -d)
 trap 'rm -rf "${TMP:?}"' EXIT
 if [[ $REUSE == false ]]; then
@@ -53,7 +59,7 @@ keyUsage = critical,digitalSignature,keyEncipherment
 extendedKeyUsage = serverAuth
 CNF
 /usr/bin/openssl genrsa -out "$TMP/key.pem" 2048 2>/dev/null
-/usr/bin/openssl req -new -x509 -key "$TMP/key.pem" -days 825 -config "$TMP/req.cnf" -out "$TMP/cert.pem" 2>/dev/null
+/usr/bin/openssl req -new -x509 -key "$TMP/key.pem" -days 365 -config "$TMP/req.cnf" -out "$TMP/cert.pem" 2>/dev/null
 install -o root -g wheel -m 600 /dev/null "$DIR/key.der"
 /usr/bin/openssl rsa -in "$TMP/key.pem" -outform DER -out "$DIR/key.der" 2>/dev/null
 install -o root -g wheel -m 644 "$TMP/cert.pem" "$DIR/cert.pem"
@@ -88,20 +94,68 @@ chown root:wheel "$PLIST"; chmod 644 "$PLIST"
 launchctl bootstrap system "$PLIST"
 
 # 4. hosts: serv.ds.kakao.com만 서버 전용 주소로. KleanTalk 블록이 없으면 만든다.
+# 매번 타임스탬프 백업을 남기고(최대 5개), 같은 디렉터리 임시 파일+rename으로 원자 교체한다.
+TS=$(date +%Y%m%d-%H%M%S)
+cp -p /etc/hosts "/etc/hosts.kleantalk.$TS.bak"
+ls -t /etc/hosts.kleantalk.*.bak 2>/dev/null | tail -n +6 | xargs rm -f --
 if ! grep -q '^# >>> KakaoAdBlock' /etc/hosts; then
-  [[ -f /etc/hosts.kakaoadblock.bak ]] || cp /etc/hosts /etc/hosts.kakaoadblock.bak
   printf '\n# >>> KakaoAdBlock (managed by KleanTalk)\n0.0.0.0 display.ad.daum.net\n:: display.ad.daum.net\n0.0.0.0 analytics.ad.daum.net\n:: analytics.ad.daum.net\n0.0.0.0 %s\n:: %s\n# <<< KakaoAdBlock\n' $HOST $HOST >> /etc/hosts
 fi
-# 블록 안에서 serv.ds.kakao.com의 IPv4만 서버 전용 주소로, 나머지(다른 주소, 모든 IPv6)는 막음(0.0.0.0, ::)으로 맞춘다.
+# 블록 안에서 관리 대상(serv.ds.kakao.com, daum 광고 2종)만 정리하고, 그 밖의 행·주석·별칭은 그대로 둔다.
 # IPv6가 막혀 있으면 카카오톡은 곧바로 IPv4(전용 주소)로 연결한다.
+TMP_HOSTS=$(mktemp /etc/hosts.kleantalk.XXXXXX)
+trap 'rm -f "$TMP_HOSTS"; rm -rf "${TMP:?}"' EXIT
 awk -v host="$HOST" -v addr="$ADDR" '
   /^# >>> KakaoAdBlock/ { inside = 1; print; next }
   /^# <<< KakaoAdBlock/ { inside = 0; print; next }
-  inside && NF >= 2 && $1 ~ /^[0-9.]+$/ { print ($2 == host ? addr " " : "0.0.0.0 ") $2; next }
-  inside && NF >= 2 && $1 ~ /:/ { print ":: " $2; next }
+  !inside { print; next }
+  NF < 2 { print; next }
+  $1 ~ /^[0-9.]+$/ {
+    if ($2 == host) { sub(/^[0-9.]+/, addr); print; next }
+    if ($2 == "display.ad.daum.net" || $2 == "analytics.ad.daum.net") { sub(/^[0-9.]+/, "0.0.0.0"); print; next }
+    print; next
+  }
+  $1 ~ /:/ {
+    if ($2 == host || $2 == "display.ad.daum.net" || $2 == "analytics.ad.daum.net") { sub(/^[^[:space:]]+/, "::"); print; next }
+    print; next
+  }
   { print }
-' /etc/hosts > /etc/hosts.kleantalk.tmp && cat /etc/hosts.kleantalk.tmp > /etc/hosts && rm -f /etc/hosts.kleantalk.tmp
+' /etc/hosts > "$TMP_HOSTS"
+chmod 644 "$TMP_HOSTS"; chown root:wheel "$TMP_HOSTS"
+mv -f "$TMP_HOSTS" /etc/hosts
+trap - EXIT
 dscacheutil -flushcache; killall mDNSResponder 2>/dev/null || true
+
+# 5. 모든 사용자 로그인 확인: 시스템 에이전트로 등록한다 (upstream #1: 다른 계정에서 광고 복귀).
+#    인증서 신뢰가 사용자 도메인이라, 다른 계정에서는 그 계정으로 한 번 신뢰 등록이 필요하다.
+#    시스템 에이전트가 각 로그인 때 백그라운드 확인을 돌려, 풀렸으면 창을 띄워 안내한다.
+#    앱이 공용 위치(/Applications)에 있을 때만 등록한다.
+AGENT_LABEL=com.myungchul.kleantalk
+SYSAGENT=/Library/LaunchAgents/$AGENT_LABEL.plist
+APP_DIR=${SRC%/Contents/Resources/kleantalk-adserver}
+if [[ $SRC == */Contents/Resources/kleantalk-adserver && $APP_DIR == /Applications/* && -x $APP_DIR/Contents/MacOS/KleanTalk ]]; then
+  cat > "$SYSAGENT" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>$AGENT_LABEL</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>$APP_DIR/Contents/MacOS/KleanTalk</string>
+		<string>--background</string>
+	</array>
+	<key>RunAtLoad</key><true/>
+	<key>ProcessType</key><string>Interactive</string>
+	<key>LimitLoadToSessionType</key><string>Aqua</string>
+</dict>
+</plist>
+EOF
+  chown root:wheel "$SYSAGENT"; chmod 644 "$SYSAGENT"
+  echo "모든 사용자 로그인 확인을 등록했습니다 ($SYSAGENT). 다른 계정에서는 첫 로그인 때 신뢰 등록 안내가 뜹니다."
+else
+  echo "참고: 앱이 /Applications에 없어서 설치한 계정에서만 로그인 확인이 돕니다. /Applications로 옮긴 뒤 다시 설치하세요."
+fi
 
 echo "설치했습니다. 터미널로 설치했다면 마지막으로 인증서 신뢰를 등록하세요 (sudo 없이, macOS 확인 창이 뜸):"
 echo "  security add-trusted-cert -r trustRoot -p ssl -s $HOST \"$DIR/cert.pem\""

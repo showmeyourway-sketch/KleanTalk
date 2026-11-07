@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Sparkle
 import SwiftUI
 
@@ -19,9 +20,10 @@ struct Strings {
     let installTitle: String, installItems: [String], adminNote: String, cancel: String, install: String
     let working: String, notWorking: String, checking: String, notWorkingNote: String, reinstall: String, restarted: String
     let language: String, uninstallButton: String, uninstallTitle: String, uninstallBody: String, uninstall: String
-    let adminPrompt: String, missingFiles: String, trustCanceled: String, trustFailed: String
+    let adminPrompt: String, missingFiles: String, scriptTampered: String, trustCanceled: String, trustFailed: String
     let checkUpdates: String, serverOutdated: String, version: String, upToDate: String, updateTo: String
     let reportBug: String, bugTitle: String, bugBody: String, copyInfo: String, copiedInfo: String, infoTitle: String
+    let bugPreviewTitle: String, bugPreviewNote: String, openIssue: String
     let quit: String, edit: String, cut: String, copy: String, paste: String, selectAll: String, window: String, close: String
 
     static let ko = Strings(
@@ -36,6 +38,7 @@ struct Strings {
         uninstallBody: "광고 차단과 빈 광고 서버를 모두 지웁니다.", uninstall: "제거",
         adminPrompt: "KleanTalk을 설치하거나 제거하려면 암호가 필요합니다.",
         missingFiles: "앱 안에서 설치 파일을 찾지 못했습니다.",
+        scriptTampered: "앱 안의 설치 파일이 바뀌었습니다. DMG를 다시 받아 설치하세요.",
         trustCanceled: "인증서 등록을 취소했습니다. 다시 설치를 누르세요.",
         trustFailed: "인증서를 등록하지 못했습니다. 다시 설치를 누르세요.",
         checkUpdates: "업데이트 확인…", serverOutdated: "업데이트를 마치려면 다시 설치를 누르세요.",
@@ -43,6 +46,7 @@ struct Strings {
         reportBug: "버그 신고", bugTitle: "[버그] ",
         bugBody: "### 무슨 일이 있었나요?\n\n\n### 어떻게 하면 다시 생기나요?\n1. \n\n### 환경 (자동으로 채움)\n",
         copyInfo: "정보 복사", copiedInfo: "복사했습니다", infoTitle: "KleanTalk 진단 정보",
+        bugPreviewTitle: "이슈 열기 전 확인", bugPreviewNote: "이 내용이 공개 이슈에 올라갑니다. 민감한 부분은 지우고 여세요.", openIssue: "이슈 열기",
         quit: "KleanTalk 종료", edit: "편집", cut: "잘라내기", copy: "복사", paste: "붙여넣기", selectAll: "모두 선택",
         window: "윈도우", close: "닫기")
 
@@ -59,6 +63,7 @@ struct Strings {
         uninstallBody: "Removes ad blocking and the blank ad server.", uninstall: "Uninstall",
         adminPrompt: "KleanTalk needs your password to install or uninstall.",
         missingFiles: "Couldn’t find the installer files inside the app.",
+        scriptTampered: "The installer files inside the app were modified. Download the DMG again.",
         trustCanceled: "Certificate registration was canceled. Click Reinstall.",
         trustFailed: "Couldn’t register the certificate. Click Reinstall.",
         checkUpdates: "Check for Updates…", serverOutdated: "Click Reinstall to finish the update.",
@@ -66,6 +71,7 @@ struct Strings {
         reportBug: "Report a Bug", bugTitle: "[Bug] ",
         bugBody: "### What happened?\n\n\n### How can we reproduce it?\n1. \n\n### Environment (filled in automatically)\n",
         copyInfo: "Copy Info", copiedInfo: "Copied", infoTitle: "KleanTalk diagnostic info",
+        bugPreviewTitle: "Review before opening", bugPreviewNote: "This goes to a public issue. Remove anything sensitive first.", openIssue: "Open issue",
         quit: "Quit KleanTalk", edit: "Edit", cut: "Cut", copy: "Copy", paste: "Paste", selectAll: "Select All",
         window: "Window", close: "Close")
 }
@@ -103,9 +109,33 @@ enum AdServer {
     /// 작동하지 않을 때 어느 단계에서 막혔는지 모은다 (버그 신고 본문에 넣는다).
     /// hosts → 서버 실행 → 인증서 신뢰 → 실제 요청 순서로 보면 원인을 좁힐 수 있다.
     static func diagnose() async -> [String] {
+        let probe = await probe()
+        return [
+            "hosts: " + managedHosts.map { "\(shortHost($0))=\(resolveHost($0).joined(separator: "/")) \(hostVerdict($0))" }.joined(separator: ", "),
+            "server: \(FileManager.default.fileExists(atPath: installedBinaryPath) ? "installed" : "missing"), \(run("/usr/bin/pgrep", "-f", installedBinaryPath).isEmpty ? "not running" : "running")",
+            "trust: \(isTrusted() ? "yes" : "no")",
+            "check: \(probe.detail)",
+        ] + serverLog().map { "log: \($0)" }
+    }
+
+    /// install-adserver.sh가 막는 광고 주소 전체. serv는 전용 서버로, daum 2종은 차단으로 가야 정상.
+    /// install-adserver.sh의 ADDR과 같아야 한다 (다르면 상태 판정이 어긋난다).
+    static let loopbackAddr = "127.84.11.1"
+    private static let managedHosts = [host, "display.ad.daum.net", "analytics.ad.daum.net"]
+    private static func shortHost(_ h: String) -> String { h == host ? "serv" : h }
+
+    /// 차단 3종을 각각 판정한다. hosts는 정상인데 광고가 뜨는 경우(예: #2) 신규 엔드포인트 우회를 의심할 수 있다.
+    private static func hostVerdict(_ h: String) -> String {
+        let addrs = resolveHost(h)
+        if addrs.isEmpty { return "unresolved" }
+        if h == host { return addrs.contains(loopbackAddr) ? "ok" : "NOT-REDIRECTED" }
+        return addrs.allSatisfy({ $0 == "0.0.0.0" || $0 == "::" }) ? "blocked" : "UNBLOCKED"
+    }
+
+    private static func resolveHost(_ name: String) -> [String] {
         var addresses: [String] = []
         var info: UnsafeMutablePointer<addrinfo>?
-        if getaddrinfo(host, "443", nil, &info) == 0 {
+        if getaddrinfo(name, "443", nil, &info) == 0 {
             var p = info
             while let ai = p {
                 var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
@@ -117,13 +147,7 @@ enum AdServer {
             }
             freeaddrinfo(info)
         }
-        let probe = await probe()
-        return [
-            "hosts: \(addresses.isEmpty ? "unresolved" : addresses.joined(separator: ", "))",
-            "server: \(FileManager.default.fileExists(atPath: installedBinaryPath) ? "installed" : "missing"), \(run("/usr/bin/pgrep", "-f", installedBinaryPath).isEmpty ? "not running" : "running")",
-            "trust: \(isTrusted() ? "yes" : "no")",
-            "check: \(probe.detail)",
-        ] + serverLog().map { "log: \($0)" }
+        return addresses
     }
 
     /// 빈 광고 서버의 최근 기록 몇 줄 (시작 실패·인증서 오류가 여기 남는다)
@@ -166,10 +190,18 @@ enum AdServer {
         return SecCertificateCreateWithData(nil, data as CFData)
     }
 
+    /// 등록된 신뢰가 '이 인증서의, 이 호스트 HTTPS에 대한 trustRoot'인지까지 확인한다.
+    /// 존재 여부만 보면 거부 설정이나 다른 정책도 통과하므로.
     static func isTrusted(_ data: Data? = certificateData()) -> Bool {
         guard let cert = certificate(data) else { return false }
         var existing: CFArray?
-        return SecTrustSettingsCopyTrustSettings(cert, .user, &existing) == errSecSuccess
+        guard SecTrustSettingsCopyTrustSettings(cert, .user, &existing) == errSecSuccess,
+              let settings = existing as? [[String: Any]] else { return false }
+        return settings.contains {
+            ($0[kSecTrustSettingsPolicyString as String] as? String) == host
+                && ($0[kSecTrustSettingsResult as String] as? Int)
+                    == Int(SecTrustSettingsResult.trustRoot.rawValue)
+        }
     }
 
     /// 서버 인증서를 'serv.ds.kakao.com의 HTTPS 서버 인증'에만 믿도록 이 사용자의 신뢰 설정에 등록한다.
@@ -202,12 +234,23 @@ enum AdServer {
         return (try? await NSWorkspace.shared.openApplication(at: url, configuration: config)) != nil
     }
 
+    /// 파일의 SHA-256 hex. 읽지 못하면 nil (해시 비교에서 불일치로 처리된다).
+    private static func sha256(of path: String) -> String? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// 앱 안에 든 설치·제거 스크립트를 관리자 권한으로 실행한다. (암호 창은 macOS가 띄운다)
     static func run(install: Bool, t: Strings) -> Result {
         func quoted(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         guard let script = Bundle.main.path(forResource: install ? "install-adserver" : "uninstall-adserver", ofType: "sh"),
               let binary = Bundle.main.path(forResource: "kleantalk-adserver", ofType: nil) else {
             return .failed(t.missingFiles)
+        }
+        // 앱이 ad-hoc 서명이라 번들 변조를 검출하지 못한다. 빌드 때 내장한 해시와 다르면 root 실행을 거부한다.
+        guard sha256(of: script) == (install ? ScriptHashes.installAdserver : ScriptHashes.uninstallAdserver),
+              sha256(of: binary) == ScriptHashes.adserverBinary else {
+            return .failed(t.scriptTampered)
         }
         let cmd = "/bin/zsh \(quoted(script)) \(quoted(binary)) 2>&1"
         func escape(_ s: String) -> String {
@@ -231,7 +274,16 @@ enum LoginItem {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/\(label).plist")
     }
 
+    /// 시스템 에이전트 경로 (설치 스크립트가 모든 사용자용으로 등록, upstream #1 대응)
+    static var systemAgentPath: String { "/Library/LaunchAgents/\(label).plist" }
+
     static func set(_ on: Bool) {
+        // 시스템 에이전트가 있으면 사용자 항목은 만들지 않는다 (중복 실행 방지).
+        // 예전 설치의 사용자 항목은 정리한다.
+        if FileManager.default.fileExists(atPath: systemAgentPath) {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
         guard on else { try? FileManager.default.removeItem(at: url); return }
         let plist: [String: Any] = [
             "Label": label,
@@ -264,6 +316,9 @@ final class AppModel: ObservableObject {
     @Published var serverOutdated = false
     /// '정보 복사'를 누른 직후 잠깐 '복사했습니다'로 보여 준다
     @Published var copiedInfo = false
+    /// 버그 신고 미리보기: 전송 전에 본문을 확인·편집한다
+    @Published var showBugPreview = false
+    @Published var bugDraft = ""
     /// Sparkle로 확인한 새 버전. 확인 전이거나 확인하지 못하면 unknown.
     enum Update: Equatable { case unknown, upToDate, available(String) }
     @Published var update = Update.unknown
@@ -345,11 +400,21 @@ final class AppModel: ObservableObject {
     func reportBug() {
         Task {
             let checks = AdServer.installed && state != .working ? await AdServer.diagnose() : []
-            var c = URLComponents(string: "https://github.com/showmeyourway-sketch/KleanTalk/issues/new")!
-            let body = t.bugBody + environment(checks: checks).joined(separator: "\n")
-            c.queryItems = [.init(name: "labels", value: "bug"), .init(name: "title", value: t.bugTitle), .init(name: "body", value: body)]
-            if let url = c.url { NSWorkspace.shared.open(url) }
+            bugDraft = maskHome(t.bugBody + environment(checks: checks).joined(separator: "\n"))
+            showBugPreview = true
         }
+    }
+
+    /// 미리보기에서 [이슈 열기]를 눌렀을 때. 수정된 본문 그대로 새 이슈 화면을 연다.
+    func openBugReport() {
+        var c = URLComponents(string: "https://github.com/showmeyourway-sketch/KleanTalk/issues/new")!
+        c.queryItems = [.init(name: "labels", value: "bug"), .init(name: "title", value: t.bugTitle), .init(name: "body", value: bugDraft)]
+        if let url = c.url { NSWorkspace.shared.open(url) }
+    }
+
+    /// 홈 디렉터리 경로를 ~로 바꿔 공개 이슈·복사에 실수로 들어가지 않게 한다.
+    private func maskHome(_ s: String) -> String {
+        s.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
     }
 
     /// 버그 신고와 같은 내용(환경 + 단계별 확인 결과)을 클립보드에 복사한다.
@@ -357,7 +422,7 @@ final class AppModel: ObservableObject {
     func copyInfo() {
         Task {
             let checks = AdServer.installed ? await AdServer.diagnose() : []
-            let text = ([t.infoTitle] + environment(checks: checks)).joined(separator: "\n")
+            let text = maskHome(([t.infoTitle] + environment(checks: checks)).joined(separator: "\n"))
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
             copiedInfo = true
@@ -570,6 +635,33 @@ struct StatusView: View {
             .disabled(model.busy)
         }
         .task { await model.check() }
+        .sheet(isPresented: $model.showBugPreview) { BugPreviewView(model: model) }
+    }
+}
+
+/// 버그 신고 전송 전 확인·편집 화면. 공개 이슈에 올라갈 본문을 미리 보여 준다.
+struct BugPreviewView: View {
+    @ObservedObject var model: AppModel
+    var body: some View {
+        let t = model.t
+        VStack(alignment: .leading, spacing: 12) {
+            Text(t.bugPreviewTitle).font(.headline)
+            TextEditor(text: $model.bugDraft)
+                .font(.body)
+                .frame(minHeight: 220)
+                .border(Color.secondary.opacity(0.3))
+            Text(t.bugPreviewNote).font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button(t.cancel) { model.showBugPreview = false }
+                    .keyboardShortcut(.cancelAction)
+                Button(t.openIssue) { model.showBugPreview = false; model.openBugReport() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 460, height: 380)
     }
 }
 

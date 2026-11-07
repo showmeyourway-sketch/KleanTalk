@@ -16,6 +16,8 @@ NOTES=${2:?릴리스 노트 파일을 적으세요}
 [[ -f $NOTES ]] || { echo "릴리스 노트 파일이 없습니다: $NOTES"; exit 1; }
 [[ -z $(git status --porcelain --untracked-files=no) ]] || { echo "커밋하지 않은 변경이 있습니다. 먼저 커밋하세요."; exit 1; }
 REPO=showmeyourway-sketch/KleanTalk
+# fork·미러 등 다른 원격으로 실수 push하지 않도록 origin을 확인한다.
+[[ $(git remote get-url origin) == *"$REPO"* ]] || { echo "origin이 $REPO가 아닙니다: $(git remote get-url origin)"; exit 1; }
 
 BUILD=$(( $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Info.plist) + 1 ))
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" -c "Set :CFBundleVersion $BUILD" Info.plist
@@ -52,7 +54,7 @@ cat > build/appcast.xml <<EOF
 </rss>
 EOF
 
-git commit -q -am "버전 $VERSION" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -q -am "버전 $VERSION"
 git tag "v$VERSION"
 git push -q origin main "v$VERSION"
 gh release create "v$VERSION" build/KleanTalk.dmg "$ZIP" build/appcast.xml \
