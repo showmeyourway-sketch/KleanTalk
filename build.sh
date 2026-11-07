@@ -48,13 +48,24 @@ universal() {   # universal <출력> <swiftc 인자...>
   rm -f "build/arm64-${out:t}" "build/x86_64-${out:t}"
 }
 
-universal "$APP/Contents/MacOS/KleanTalk" -parse-as-library -F "$SPARKLE" -framework Sparkle \
-  -Xlinker -rpath -Xlinker @executable_path/../Frameworks Sources/*.swift
-ditto "$SPARKLE/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
-
 # 빈 광고 서버와 설치·제거 스크립트 (설치하면 root 전용 폴더로 복사된다)
 universal "$RES/kleantalk-adserver" AdServer/main.swift
 install -m 755 scripts/install-adserver.sh scripts/uninstall-adserver.sh "$RES/"
+
+# root로 실행하기 전 무결성을 확인하도록, 번들 파일의 SHA-256을 앱에 내장한다.
+# 빌드할 때마다 다시 만들며 커밋하지 않는다 (.gitignore).
+{
+print "// 자동 생성 (build.sh). 직접 고치지 마세요. root 실행 전 무결성 확인용."
+print "enum ScriptHashes {"
+print "    static let installAdserver = \"$(shasum -a 256 "$RES/install-adserver.sh" | cut -d' ' -f1)\""
+print "    static let uninstallAdserver = \"$(shasum -a 256 "$RES/uninstall-adserver.sh" | cut -d' ' -f1)\""
+print "    static let adserverBinary = \"$(shasum -a 256 "$RES/kleantalk-adserver" | cut -d' ' -f1)\""
+print "}"
+} > Sources/ScriptHashes.swift
+
+universal "$APP/Contents/MacOS/KleanTalk" -parse-as-library -F "$SPARKLE" -framework Sparkle \
+  -Xlinker -rpath -Xlinker @executable_path/../Frameworks Sources/*.swift
+ditto "$SPARKLE/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 
 # 아이콘: 미리 컴파일해 둔 Icon Composer 형식 (바꾸려면 scripts/make-icon.sh, Xcode 필요)
 cp Icon/compiled/Assets.car Icon/compiled/AppIcon.icns "$RES/"

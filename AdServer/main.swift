@@ -197,6 +197,17 @@ let env = ProcessInfo.processInfo.environment
 let listenHost = env["KLEANTALK_ADSERVER_HOST"] ?? "127.84.11.1"
 let port = NWEndpoint.Port(env["KLEANTALK_ADSERVER_PORT"] ?? "443") ?? 443
 
+/// 바인드 주소는 루프백만 허용한다. 인증서가 serv.ds.kakao.com용이라 외부 바인드는 MITM 범위를 넓힌다.
+func isLoopbackHost(_ h: String) -> Bool {
+    if h == "localhost" || h == "::1" { return true }
+    let parts = h.split(separator: ".", omittingEmptySubsequences: false)
+    return parts.count == 4 && parts[0] == "127" && parts[1...].allSatisfy { UInt8($0) != nil }
+}
+guard isLoopbackHost(listenHost) else {
+    FileHandle.standardError.write(Data("루프백 주소만 쓸 수 있음: \(listenHost)\n".utf8))
+    exit(1)
+}
+
 /// 루프백에 전용 주소를 붙인다 (이미 있으면 그대로). root로 실행될 때만 필요하다.
 func addLoopbackAlias(_ address: String) {
     let p = Process()
