@@ -103,9 +103,33 @@ enum AdServer {
     /// 작동하지 않을 때 어느 단계에서 막혔는지 모은다 (버그 신고 본문에 넣는다).
     /// hosts → 서버 실행 → 인증서 신뢰 → 실제 요청 순서로 보면 원인을 좁힐 수 있다.
     static func diagnose() async -> [String] {
+        let probe = await probe()
+        return [
+            "hosts: " + managedHosts.map { "\(shortHost($0))=\(resolveHost($0).joined(separator: "/")) \(hostVerdict($0))" }.joined(separator: ", "),
+            "server: \(FileManager.default.fileExists(atPath: installedBinaryPath) ? "installed" : "missing"), \(run("/usr/bin/pgrep", "-f", installedBinaryPath).isEmpty ? "not running" : "running")",
+            "trust: \(isTrusted() ? "yes" : "no")",
+            "check: \(probe.detail)",
+        ] + serverLog().map { "log: \($0)" }
+    }
+
+    /// install-adserver.sh가 막는 광고 주소 전체. serv는 전용 서버로, daum 2종은 차단으로 가야 정상.
+    /// install-adserver.sh의 ADDR과 같아야 한다 (다르면 상태 판정이 어긋난다).
+    static let loopbackAddr = "127.84.11.1"
+    private static let managedHosts = [host, "display.ad.daum.net", "analytics.ad.daum.net"]
+    private static func shortHost(_ h: String) -> String { h == host ? "serv" : h }
+
+    /// 차단 3종을 각각 판정한다. hosts는 정상인데 광고가 뜨는 경우(예: #2) 신규 엔드포인트 우회를 의심할 수 있다.
+    private static func hostVerdict(_ h: String) -> String {
+        let addrs = resolveHost(h)
+        if addrs.isEmpty { return "unresolved" }
+        if h == host { return addrs.contains(loopbackAddr) ? "ok" : "NOT-REDIRECTED" }
+        return addrs.allSatisfy({ $0 == "0.0.0.0" || $0 == "::" }) ? "blocked" : "UNBLOCKED"
+    }
+
+    private static func resolveHost(_ name: String) -> [String] {
         var addresses: [String] = []
         var info: UnsafeMutablePointer<addrinfo>?
-        if getaddrinfo(host, "443", nil, &info) == 0 {
+        if getaddrinfo(name, "443", nil, &info) == 0 {
             var p = info
             while let ai = p {
                 var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
@@ -117,13 +141,7 @@ enum AdServer {
             }
             freeaddrinfo(info)
         }
-        let probe = await probe()
-        return [
-            "hosts: \(addresses.isEmpty ? "unresolved" : addresses.joined(separator: ", "))",
-            "server: \(FileManager.default.fileExists(atPath: installedBinaryPath) ? "installed" : "missing"), \(run("/usr/bin/pgrep", "-f", installedBinaryPath).isEmpty ? "not running" : "running")",
-            "trust: \(isTrusted() ? "yes" : "no")",
-            "check: \(probe.detail)",
-        ] + serverLog().map { "log: \($0)" }
+        return addresses
     }
 
     /// 빈 광고 서버의 최근 기록 몇 줄 (시작 실패·인증서 오류가 여기 남는다)
