@@ -41,7 +41,7 @@ build.sh, scripts/make-dmg.sh
   - 다크 모드에서 실측했습니다. 사이드바 77px `#2D2D2D`, 구분선 1px `#383838`, 목록 `#222222`입니다.
   - 그래서 창과 픽셀 단위로 같습니다. 라이트 모드는 아직 실측하지 않았습니다.
 - **인증서**
-  - 인증 기관이 아닌 `serv.ds.kakao.com` 전용 일반 인증서입니다(`CA:FALSE`, 825일). 자기 서명이라 `trustRoot`로 등록합니다. `trustAsRoot`는 매개변수 오류가 납니다.
+  - 인증 기관이 아닌 `serv.ds.kakao.com` 전용 일반 인증서입니다(`CA:FALSE`, 365일). 자기 서명이라 `trustRoot`로 등록합니다. `trustAsRoot`는 매개변수 오류가 납니다.
   - 관리자 권한 스크립트 안에서 `security add-trusted-cert`를 쓰면 *"no user interaction was possible"*로 거부됩니다. 그래서 신뢰 등록은 앱이 사용자 권한으로 합니다.
   - 다시 설치할 때 인증서가 30일 넘게 남아 있으면 그대로 써서, 신뢰 확인 창이 다시 뜨지 않습니다.
 - **전용 루프백 주소 `127.84.11.1`**

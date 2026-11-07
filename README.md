@@ -24,7 +24,7 @@
 
 ## 설치
 
-1. [KleanTalk.dmg 받기](https://github.com/showmeyourway-sketch/KleanTalk/releases/latest/download/KleanTalk.dmg) 후 `KleanTalk.app`을 응용 프로그램 폴더로 옮깁니다.
+1. [KleanTalk.dmg 받기](https://github.com/showmeyourway-sketch/KleanTalk/releases/latest/download/KleanTalk.dmg) 후 `KleanTalk.app`을 응용 프로그램 폴더로 옮깁니다. 가급적 `/Applications`(관리자 소유)에 두세요. 다른 macOS 계정에서도 쓰려면 `/Applications`에 두고 설치하세요 (계정마다 첫 로그인 때 신뢰 등록 안내가 뜹니다).
 2. 앱을 엽니다. 처음 열 때 *"Apple은 악성 코드가 없는지 확인할 수 없습니다"* 경고가 뜨면 다음과 같이 합니다.
    - 이 앱은 Apple 공증을 받지 않아 이 경고가 뜹니다.
    - **시스템 설정 → 개인정보 보호 및 보안**의 아래쪽에서 **그래도 열기**를 누르세요.
@@ -54,7 +54,7 @@ KleanTalk을 열고 **제거…**를 누릅니다. 다음을 모두 되돌리고
 
 ## 버그 신고
 
-KleanTalk 메뉴의 **버그 신고…**(1.4부터)를 누르면 GitHub 이슈 쓰기 화면이 열립니다. 앱 버전, macOS, 칩, 카카오톡 버전, 상태가 미리 채워집니다. 직접 쓰려면 [이슈 쓰기](https://github.com/showmeyourway-sketch/KleanTalk/issues/new?template=bug_report.md)를 누르세요. GitHub 계정이 필요합니다.
+KleanTalk 메뉴의 **버그 신고…**(1.4부터)를 누르면 GitHub 이슈 쓰기 화면이 열립니다. 앱 버전, macOS, 칩, 카카오톡 버전, 상태가 미리 채워집니다. 직접 쓰려면 [이슈 쓰기](https://github.com/showmeyourway-sketch/KleanTalk/issues/new?template=bug_report.md)를 누르세요. GitHub 계정이 필요합니다. 열기 전에 본문을 확인·편집할 수 있으며, 홈 디렉터리 경로는 `~`로 가려집니다.
 
 ## 이 맥에서 바뀌는 것
 
@@ -81,7 +81,13 @@ KleanTalk 메뉴의 **버그 신고…**(1.4부터)를 누르면 GitHub 이슈 �
 - macOS 12(Monterey) 이상, Apple Silicon과 Intel 맥 모두. 맥용 카카오톡과 같은 기준입니다. 맥용 카카오톡 26.9.0에서 확인했습니다.
 - **카카오가 광고 방식을 바꾸면 동작하지 않을 수 있습니다.** 광고 주소, 응답 형식, 광고 HTML과 앱이 주고받는 신호가 바뀌는 경우입니다.
 - **빈 광고 색:** 다크 모드에서 실측한 색입니다. 라이트 모드 색은 아직 실측하지 않았습니다.
-- **인증서 기한:** 825일입니다(macOS가 허용하는 최대). 기한이 다가오면 상태가 "작동하지 않음"으로 바뀝니다. 그때 **다시 설치**를 누르면 새로 만듭니다.
+- **인증서 기한:** 365일입니다. 기한이 다가오면 상태가 "작동하지 않음"으로 바뀝니다. 그때 **다시 설치**를 누르면 새로 만듭니다.
+
+## 문제 해결
+
+- **광고가 다시 뜨면:** 앱을 열어 상태를 보세요. "작동하지 않음"이면 **다시 설치**를 누르세요. 상태가 "작동 중"인데 광고가 뜨면 터미널에서 `KleanTalk.app/Contents/MacOS/KleanTalk --diagnose`를 실행해 `hosts:` 줄을 확인하세요. `serv`가 `ok`가 아니면 hosts가 초기화된 것이니 다시 설치하세요. 전부 정상(`ok`·`blocked`)인데 광고가 뜨면 카카오가 광고 방식을 바꾼 것일 수 있으니, 광고 화면과 `--diagnose` 결과를 [이슈](https://github.com/showmeyourway-sketch/KleanTalk/issues/new?template=bug_report.md)에 올려 주세요.
+- **다른 macOS 계정에서 광고가 뜨면:** 계정마다 인증서 신뢰 등록이 한 번씩 필요합니다. 앱이 `/Applications`에 있으면 다른 계정 로그인 때 안내 창이 뜹니다. 안내대로 **다시 설치**를 누르세요.
+- **원격 연결·다른 앱 문제:** KleanTalk은 광고 주소·빈 광고 서버·인증서 신뢰만 건드립니다. 원격 관리·화면 공유·방화벽 설정은 바꾸지 않습니다.
 
 ## 소스에서 빌드
 
@@ -133,7 +139,8 @@ KleanTalk turns the ad slot in KakaoTalk for Mac into **empty space in KakaoTalk
   2. Because the app isn't notarized, macOS may block the first launch. Allow it in **System Settings → Privacy & Security → Open Anyway**.
 - **Updates (1.3+):** the app checks once a day, and you can also choose **Check for Updates…** from the menu. Updates are verified with an EdDSA signature (Sparkle) before installing. If an update ships a new blank-ad server, click **Reinstall** once to finish.
 - **Uninstall:** click **Uninstall…** in the app. It removes everything (server, certificate trust, hosts entries, login item) and moves the app to the Trash.
-- **Report a bug:** choose **Report a Bug…** in the app menu (1.4+) to open a GitHub issue with your app version, macOS, chip, KakaoTalk version, and status filled in, or [open one directly](https://github.com/showmeyourway-sketch/KleanTalk/issues/new?template=bug_report.md). Needs a GitHub account.
+- **Report a bug:** choose **Report a Bug…** in the app menu (1.4+) to open a GitHub issue with your app version, macOS, chip, KakaoTalk version, and status filled in, or [open one directly](https://github.com/showmeyourway-sketch/KleanTalk/issues/new?template=bug_report.md). Needs a GitHub account. You can review and edit the body before it opens, and home-directory paths are masked as `~`.
+- **Troubleshooting:** if ads return while status says working, run `KleanTalk.app/Contents/MacOS/KleanTalk --diagnose` and check the `hosts:` line. Other macOS accounts need their own one-time trust setup (keep the app in `/Applications` so they get prompted). Remote management/sharing settings are never touched.
 - **Security:**
   - The certificate is a non-CA leaf for `serv.ds.kakao.com` only, trusted for that hostname's SSL server auth in your user trust settings.
   - Its key is readable by root only.
